@@ -43,9 +43,9 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 LLM_MODEL = "gpt-4o-mini"
 TOP_K = 5
 DEFAULT_URLS = [
-    "https://www.company.com",
-    "https://www.company.com/about",
-    "https://www.company.com/services"
+    "https://thebngc.com",
+    "https://gogel.thebngc.com",
+    "https://gogel.thebngc.com/agents"
 ]
 
 # Initialize FastAPI app
