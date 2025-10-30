@@ -267,6 +267,62 @@ async def prep_rag(request: PrepRequest, background_tasks: BackgroundTasks):
         message="Corpus building started. Check status with health endpoint."
     )
 
+@app.post("/migrate-corpus")
+async def migrate_corpus():
+    """Migrate local corpus to Redis"""
+    if not redis_client:
+        raise HTTPException(status_code=500, detail="Redis not available")
+    
+    try:
+        # Load local corpus
+        with open("corpus_local.json", "r", encoding="utf-8") as f:
+            local_corpus = json.load(f)
+        
+        # Clear existing corpus
+        doc_ids = redis_client.smembers("corpus:documents")
+        for doc_id in doc_ids:
+            redis_client.delete(f"corpus:doc:{doc_id}")
+        redis_client.delete("corpus:documents")
+        redis_client.delete("corpus:metadata")
+        
+        # Migrate documents
+        migrated_count = 0
+        for doc in local_corpus:
+            doc_id = doc.get("id", migrated_count)
+            
+            redis_data = {
+                "text": doc["text"],
+                "embedding": json.dumps(doc["embedding"]),
+                "source": doc["source"],
+                "created_at": doc.get("created_at", datetime.now().isoformat())
+            }
+            
+            redis_client.hset(f"corpus:doc:{doc_id}", mapping=redis_data)
+            redis_client.sadd("corpus:documents", doc_id)
+            migrated_count += 1
+        
+        # Store metadata
+        sources = list(set(doc["source"] for doc in local_corpus))
+        redis_client.hset("corpus:metadata", mapping={
+            "total_documents": migrated_count,
+            "last_updated": datetime.now().isoformat(),
+            "urls": json.dumps(sources),
+            "migration_source": "corpus_local.json"
+        })
+        
+        return {
+            "status": "success",
+            "documents_migrated": migrated_count,
+            "sources": sources,
+            "message": f"Successfully migrated {migrated_count} documents from local corpus to Redis"
+        }
+        
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="corpus_local.json not found")
+    except Exception as e:
+        logger.error(f"Migration error: {e}")
+        raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
+
 @app.post("/debug-search")
 async def debug_search(request: QueryRequest):
     """Debug endpoint to see what content is actually retrieved"""
@@ -385,7 +441,7 @@ async def ask_question(request: QueryRequest):
     try:
         if is_greeting:
             # Handle greetings with a more conversational prompt
-            prompt = f"""You are a helpful an assistant for BNGC company named "Rafa". The user is greeting you or starting a conversation.
+            prompt = f"""You are a helpful assistant named "Rafa" for BNGC company . The user is greeting you or starting a conversation.
 
 Respond naturally to their greeting and introduce yourself. Mention that you can help them learn about BNGC and its services. Be warm and welcoming.
 
@@ -406,6 +462,9 @@ Guidelines:
 - If you find relevant information in the context, provide it
 - If the specific information isn't in the context, be honest and say "I don't see any mention of [specific thing] in our current information"
 - Always try to be helpful and provide what related information you do have
+- When user say Thank you or Goodbye, respond politely and end the conversation
+- If the user asks a follow-up question, try to provide additional context or clarification
+- Speak Tagalog or Tagalog-English mix if the user does so
 
 Context about the company:
 {context}
