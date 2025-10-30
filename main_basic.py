@@ -25,8 +25,18 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize OpenAI client with error handling
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not openai_api_key:
+    logger.warning("OPENAI_API_KEY not found in environment variables")
+    client = None
+else:
+    try:
+        client = OpenAI(api_key=openai_api_key)
+        logger.info("OpenAI client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenAI client: {e}")
+        client = None
 
 # Configuration
 EMBEDDING_MODEL = "text-embedding-3-small"
@@ -152,6 +162,10 @@ def create_chunks(text: str, chunk_size: int = 800, overlap: int = 100) -> List[
 
 def get_embedding(text: str) -> List[float]:
     """Get embedding for text"""
+    if not client:
+        logger.error("OpenAI client not initialized")
+        return [0.0] * 1536  # Return zero vector
+    
     try:
         response = client.embeddings.create(
             input=text,
@@ -168,6 +182,7 @@ async def health_check():
     status = {
         "status": "healthy",
         "redis_connected": redis_client is not None,
+        "openai_available": client is not None,
         "timestamp": datetime.now().isoformat()
     }
     
@@ -298,6 +313,9 @@ async def ask_question(request: QueryRequest):
     conversation_id = request.conversation_id or f"conv_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     # Generate answer
+    if not client:
+        raise HTTPException(status_code=500, detail="OpenAI client not available")
+    
     try:
         prompt = f"""Based on the following context, answer the question. If the answer is not in the context, say so.
 

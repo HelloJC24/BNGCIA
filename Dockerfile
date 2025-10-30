@@ -24,14 +24,16 @@ RUN pip install --no-cache-dir pydantic==2.6.0
 RUN pip install --no-cache-dir python-dotenv==1.0.1
 RUN pip install --no-cache-dir requests==2.31.0
 RUN pip install --no-cache-dir beautifulsoup4==4.12.3
-RUN pip install --no-cache-dir openai==1.12.0
+RUN pip install --no-cache-dir openai==1.6.1
+RUN pip install --no-cache-dir httpx==0.25.2
 RUN pip install --no-cache-dir tqdm==4.66.2
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash appuser
 
-# Copy application files
+# Copy application files (use basic version that works)
 COPY --chown=appuser:appuser main_basic.py main.py
+COPY --chown=appuser:appuser test_openai.py ./
 COPY --chown=appuser:appuser .env* ./
 
 # Switch to non-root user
