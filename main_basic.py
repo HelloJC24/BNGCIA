@@ -267,6 +267,44 @@ async def prep_rag(request: PrepRequest, background_tasks: BackgroundTasks):
         message="Corpus building started. Check status with health endpoint."
     )
 
+@app.post("/debug-search")
+async def debug_search(request: QueryRequest):
+    """Debug endpoint to see what content is actually retrieved"""
+    if not redis_client:
+        raise HTTPException(status_code=500, detail="Redis not available")
+    
+    # Get query embedding
+    query_embedding = get_embedding(request.question)
+    
+    # Retrieve relevant documents
+    doc_ids = redis_client.smembers("corpus:documents")
+    similarities = []
+    
+    for doc_id in doc_ids:
+        doc_data = redis_client.hgetall(f"corpus:doc:{doc_id}")
+        if doc_data:
+            doc_embedding = json.loads(doc_data["embedding"])
+            similarity = cosine_similarity(query_embedding, doc_embedding)
+            similarities.append((similarity, doc_data, doc_id))
+    
+    # Sort by similarity and get top K
+    similarities.sort(key=lambda x: x[0], reverse=True)
+    top_docs = similarities[:10]  # Get more for debugging
+    
+    return {
+        "question": request.question,
+        "total_documents": len(similarities),
+        "top_similarities": [
+            {
+                "doc_id": doc_id,
+                "similarity": similarity,
+                "source": doc_data["source"],
+                "text_preview": doc_data["text"][:200] + "..." if len(doc_data["text"]) > 200 else doc_data["text"]
+            }
+            for similarity, doc_data, doc_id in top_docs
+        ]
+    }
+
 @app.post("/ask", response_model=QueryResponse)
 async def ask_question(request: QueryRequest):
     """Query the RAG system"""
@@ -285,12 +323,35 @@ async def ask_question(request: QueryRequest):
     doc_ids = redis_client.smembers("corpus:documents")
     similarities = []
     
+    # Also do a simple text search for names/specific terms
+    text_matches = []
+    question_words = request.question.lower().split()
+    
     for doc_id in doc_ids:
         doc_data = redis_client.hgetall(f"corpus:doc:{doc_id}")
         if doc_data:
+            doc_text_lower = doc_data["text"].lower()
+            
+            # Vector similarity
             doc_embedding = json.loads(doc_data["embedding"])
             similarity = cosine_similarity(query_embedding, doc_embedding)
             similarities.append((similarity, doc_data))
+            
+            # Text matching - boost documents that contain query terms
+            text_match_score = 0
+            for word in question_words:
+                if len(word) > 2 and word in doc_text_lower:
+                    text_match_score += 1
+            
+            if text_match_score > 0:
+                text_matches.append((text_match_score, doc_data))
+    
+    # Combine and prioritize text matches for specific names/terms
+    if text_matches:
+        text_matches.sort(key=lambda x: x[0], reverse=True)
+        # Add top text matches to similarities with boosted scores
+        for score, doc_data in text_matches[:3]:
+            similarities.append((0.9 + score * 0.1, doc_data))  # Boost text matches
     
     # Sort by similarity and get top K
     similarities.sort(key=lambda x: x[0], reverse=True)
@@ -315,7 +376,7 @@ async def ask_question(request: QueryRequest):
     # Check if this is a greeting or casual conversation
     question_lower = request.question.lower().strip()
     greeting_words = ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening', 'how are you', 'what\'s up', 'greetings']
-    is_greeting = any(greeting in question_lower for greeting in greeting_words)
+    is_greeting = any(greeting in question_lower for greeting in greeting_words) and len(question_lower.split()) <= 3
     
     # Generate answer
     if not client:
@@ -324,9 +385,9 @@ async def ask_question(request: QueryRequest):
     try:
         if is_greeting:
             # Handle greetings with a more conversational prompt
-            prompt = f"""You are a helpful AI assistant for this company. The user is greeting you or starting a conversation.
+            prompt = f"""You are a helpful an assistant for BNGC company named "Rafa". The user is greeting you or starting a conversation.
 
-Respond naturally to their greeting and introduce yourself as the company's AI assistant. Mention that you can help them learn about the company and its services. Be warm and welcoming.
+Respond naturally to their greeting and introduce yourself. Mention that you can help them learn about BNGC and its services. Be warm and welcoming.
 
 Company context (for reference):
 {context[:500]}...
@@ -335,14 +396,16 @@ User: {request.question}
 
 Response:"""
         else:
-            # Handle information requests with context
-            prompt = f"""You are a helpful AI assistant for this company. Use the provided context to answer questions about the company.
+            # Handle information requests with context - ALWAYS use the context for factual questions
+            prompt = f"""You are an assistant named "Rafa" for BNGC. Use the provided context to answer questions about the company.
+
+IMPORTANT: The user is asking about specific information. Search through the context carefully.
 
 Guidelines:
-- Answer based on the context provided below
-- Be conversational and helpful
-- If the specific information isn't in the context, say "I don't have that specific information, but I can tell you about..." and provide related information from the context
-- Always try to be helpful and redirect to what you do know about the company
+- Search the context thoroughly for any mention of what the user is asking about
+- If you find relevant information in the context, provide it
+- If the specific information isn't in the context, be honest and say "I don't see any mention of [specific thing] in our current information"
+- Always try to be helpful and provide what related information you do have
 
 Context about the company:
 {context}
