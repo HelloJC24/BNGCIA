@@ -312,14 +312,39 @@ async def ask_question(request: QueryRequest):
     # Generate conversation ID
     conversation_id = request.conversation_id or f"conv_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
+    # Check if this is a greeting or casual conversation
+    question_lower = request.question.lower().strip()
+    greeting_words = ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening', 'how are you', 'what\'s up', 'greetings']
+    is_greeting = any(greeting in question_lower for greeting in greeting_words)
+    
     # Generate answer
     if not client:
         raise HTTPException(status_code=500, detail="OpenAI client not available")
     
     try:
-        prompt = f"""Based on the following context, answer the question. If the answer is not in the context, say so.
+        if is_greeting:
+            # Handle greetings with a more conversational prompt
+            prompt = f"""You are a helpful AI assistant for this company. The user is greeting you or starting a conversation.
 
-Context:
+Respond naturally to their greeting and introduce yourself as the company's AI assistant. Mention that you can help them learn about the company and its services. Be warm and welcoming.
+
+Company context (for reference):
+{context[:500]}...
+
+User: {request.question}
+
+Response:"""
+        else:
+            # Handle information requests with context
+            prompt = f"""You are a helpful AI assistant for this company. Use the provided context to answer questions about the company.
+
+Guidelines:
+- Answer based on the context provided below
+- Be conversational and helpful
+- If the specific information isn't in the context, say "I don't have that specific information, but I can tell you about..." and provide related information from the context
+- Always try to be helpful and redirect to what you do know about the company
+
+Context about the company:
 {context}
 
 Question: {request.question}
