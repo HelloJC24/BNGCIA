@@ -18,7 +18,7 @@ services:
   rag-api:
     build:
       context: .
-      dockerfile: Dockerfile.simple
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:

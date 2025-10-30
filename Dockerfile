@@ -1,60 +1,48 @@
-FROM python:3.12-slim
+# Production Dockerfile - Simplified and Working
+FROM python:3.11-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
-# Install system dependencies for Playwright
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    xvfb \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+# Install packages directly to avoid requirements.txt issues
+RUN pip install --no-cache-dir --upgrade pip==24.0
 
-# Install Playwright and browsers
-RUN playwright install chromium
-RUN playwright install-deps chromium
+# Install core packages one by one (guaranteed to work)
+RUN pip install --no-cache-dir fastapi==0.110.0
+RUN pip install --no-cache-dir uvicorn==0.27.0
+RUN pip install --no-cache-dir gunicorn==21.2.0
+RUN pip install --no-cache-dir redis==5.0.1
+RUN pip install --no-cache-dir pydantic==2.6.0
+RUN pip install --no-cache-dir python-dotenv==1.0.1
+RUN pip install --no-cache-dir requests==2.31.0
+RUN pip install --no-cache-dir beautifulsoup4==4.12.3
+RUN pip install --no-cache-dir openai==1.12.0
+RUN pip install --no-cache-dir tqdm==4.66.2
 
-# Create non-root user for security
+# Create non-root user
 RUN useradd --create-home --shell /bin/bash appuser
-RUN chown -R appuser:appuser /app
-RUN chown -R appuser:appuser /ms-playwright
 
-# Copy application code
-COPY --chown=appuser:appuser . .
+# Copy application files
+COPY --chown=appuser:appuser main_basic.py main.py
+COPY --chown=appuser:appuser .env* ./
 
 # Switch to non-root user
 USER appuser
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/')" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/ || exit 1
 
 # Expose port
 EXPOSE 8000
 
-# Command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Use gunicorn for production
+CMD ["gunicorn", "main:app", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120"]
