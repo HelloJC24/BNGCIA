@@ -1,0 +1,46 @@
+# Dokploy Deployment Configuration
+
+name: rag-api
+type: compose
+
+# Environment Variables (set these in Dokploy dashboard)
+environment:
+  OPENAI_API_KEY: "your_openai_api_key_here"
+  REDIS_URL: "redis://redis:6379"
+  
+# Compose file path
+compose_file: docker-compose.yml
+
+# Domain configuration (update with your domain)
+domains:
+  - domain: rag-api.yourdomain.com
+    service: rag-api
+    port: 8000
+
+# Health checks
+health_check:
+  enabled: true
+  endpoint: "/"
+  interval: 30
+  timeout: 10
+  retries: 3
+
+# Auto-deployment settings
+auto_deploy:
+  enabled: true
+  branch: main
+  
+# Resource limits
+resources:
+  rag-api:
+    memory: "1Gi"
+    cpu: "0.5"
+  redis:
+    memory: "512Mi"
+    cpu: "0.25"
+
+# Backup configuration for Redis
+backup:
+  redis:
+    schedule: "0 2 * * *"  # Daily at 2 AM
+    retention: 7  # Keep 7 days
