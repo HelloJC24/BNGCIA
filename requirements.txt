@@ -1,19 +1,36 @@
+# Core build dependencies
+setuptools>=68.0.0
+wheel>=0.41.0
+pip>=23.0.0
+
+# FastAPI and server
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 gunicorn==21.2.0
+python-multipart==0.0.6
+
+# Database and caching
 redis==5.0.1
+
+# Configuration
 python-dotenv==1.0.0
 pydantic==2.5.0
+email-validator==2.1.0
+
+# OpenAI and ML
 openai==1.6.1
+numpy==1.25.2
+
+# Web scraping
 requests==2.31.0
 beautifulsoup4==4.12.2
-numpy==1.25.2
-tqdm==4.66.1
 playwright==1.40.0
-python-multipart==0.0.6
-email-validator==2.1.0
-# Existing dependencies from your local RAG
+
+# Utilities
+tqdm==4.66.1
 typing-extensions==4.8.0
+
+# Core dependencies
 annotated-types==0.6.0
 anyio==4.0.0
 certifi==2023.11.17

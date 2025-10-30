@@ -6,10 +6,16 @@ FROM python:3.12-slim as builder
 # Build dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
+
+# Upgrade pip and install setuptools first
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install packages with user flag
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Production stage
@@ -54,8 +60,12 @@ COPY --from=builder /root/.local /home/appuser/.local
 
 # Install Playwright browsers
 USER appuser
+
+# Ensure setuptools is available for playwright
+RUN pip install --user --no-cache-dir setuptools wheel
+
 RUN python -m playwright install chromium
-RUN python -m playwright install-deps chromium
+RUN python -m playwright install-deps chromium || true
 
 # Copy application code
 COPY --chown=appuser:appuser . .
