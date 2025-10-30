@@ -1,4 +1,4 @@
-# Dokploy Deployment Configuration - Updated for Simple Build
+# Dokploy Deployment Configuration - Ultra Basic Version for Testing
 
 name: rag-api
 type: compose
@@ -8,11 +8,11 @@ environment:
   OPENAI_API_KEY: "your_openai_api_key_here"
   REDIS_URL: "redis://redis:6379"
   
-# Use simple dockerfile for faster builds
-dockerfile: Dockerfile.simple
+# Use ultra basic dockerfile for guaranteed builds
+dockerfile: Dockerfile.ultrabasic
 
-# Compose file path
-compose_file: docker-compose.yml
+# Use basic compose file
+compose_file: docker-compose.basic.yml
 
 # Domain configuration (update with your domain)
 domains:

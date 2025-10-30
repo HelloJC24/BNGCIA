@@ -1,0 +1,345 @@
+"""
+Minimal FastAPI RAG API Server - Basic version without numpy
+For initial testing and deployment debugging
+"""
+import os
+import json
+import math
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
+import logging
+
+import redis
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+import requests
+from bs4 import BeautifulSoup
+from openai import OpenAI
+
+# Load environment variables
+load_dotenv()
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Configuration
+EMBEDDING_MODEL = "text-embedding-3-small"
+LLM_MODEL = "gpt-4o-mini"
+TOP_K = 5
+DEFAULT_URLS = [
+    "https://www.company.com",
+    "https://www.company.com/about",
+    "https://www.company.com/services"
+]
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Company RAG API - Basic",
+    description="Basic RAG system for testing deployment",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize Redis
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+try:
+    redis_client = redis.from_url(redis_url, decode_responses=True)
+    redis_client.ping()
+    logger.info(f"Connected to Redis at {redis_url}")
+except Exception as e:
+    logger.error(f"Failed to connect to Redis: {e}")
+    redis_client = None
+
+# Pydantic models
+class QueryRequest(BaseModel):
+    question: str
+    conversation_id: Optional[str] = None
+    user_id: Optional[str] = "anonymous"
+
+class PrepRequest(BaseModel):
+    urls: Optional[List[str]] = None
+    force_rebuild: bool = False
+
+class QueryResponse(BaseModel):
+    answer: str
+    sources: List[str]
+    conversation_id: str
+    timestamp: str
+
+class PrepResponse(BaseModel):
+    status: str
+    documents_processed: int
+    message: str
+
+# Simple cosine similarity without numpy
+def cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Calculate cosine similarity between two vectors without numpy"""
+    if len(a) != len(b):
+        return 0.0
+    
+    dot_product = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    
+    return dot_product / (norm_a * norm_b)
+
+def scrape_website(url: str) -> str:
+    """Simple web scraping function"""
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Remove script and style elements
+        for element in soup(["script", "style"]):
+            element.decompose()
+        
+        # Get text and clean it
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        
+        return text[:10000]  # Limit text length
+    
+    except Exception as e:
+        logger.error(f"Error scraping {url}: {e}")
+        return ""
+
+def create_chunks(text: str, chunk_size: int = 800, overlap: int = 100) -> List[str]:
+    """Split text into overlapping chunks"""
+    if len(text) <= chunk_size:
+        return [text]
+    
+    chunks = []
+    start = 0
+    
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        
+        # Try to break at sentence end
+        if end < len(text):
+            last_period = chunk.rfind('.')
+            if last_period > chunk_size // 2:
+                chunk = chunk[:last_period + 1]
+                end = start + last_period + 1
+        
+        chunks.append(chunk.strip())
+        start = end - overlap
+        
+        if start >= len(text):
+            break
+    
+    return chunks
+
+def get_embedding(text: str) -> List[float]:
+    """Get embedding for text"""
+    try:
+        response = client.embeddings.create(
+            input=text,
+            model=EMBEDDING_MODEL
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        logger.error(f"Error getting embedding: {e}")
+        return [0.0] * 1536  # Return zero vector
+
+@app.get("/")
+async def health_check():
+    """Health check endpoint"""
+    status = {
+        "status": "healthy",
+        "redis_connected": redis_client is not None,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    if redis_client:
+        try:
+            redis_client.ping()
+            status["redis_status"] = "connected"
+        except:
+            status["redis_status"] = "disconnected"
+            status["redis_connected"] = False
+    
+    return status
+
+@app.post("/prep-rag/", response_model=PrepResponse)
+async def prep_rag(request: PrepRequest, background_tasks: BackgroundTasks):
+    """Build or rebuild the RAG corpus"""
+    if not redis_client:
+        raise HTTPException(status_code=500, detail="Redis not available")
+    
+    urls = request.urls or DEFAULT_URLS
+    
+    # Check if corpus exists and force_rebuild is False
+    if not request.force_rebuild:
+        existing_count = redis_client.scard("corpus:documents")
+        if existing_count > 0:
+            return PrepResponse(
+                status="exists",
+                documents_processed=existing_count,
+                message=f"Corpus already exists with {existing_count} documents. Use force_rebuild=true to rebuild."
+            )
+    
+    def build_corpus():
+        documents = []
+        doc_id = 0
+        
+        for url in urls:
+            logger.info(f"Processing {url}")
+            content = scrape_website(url)
+            
+            if content:
+                chunks = create_chunks(content)
+                
+                for chunk in chunks:
+                    if len(chunk.strip()) > 50:  # Only process meaningful chunks
+                        embedding = get_embedding(chunk)
+                        
+                        doc = {
+                            "id": doc_id,
+                            "text": chunk,
+                            "embedding": embedding,
+                            "source": url,
+                            "created_at": datetime.now().isoformat()
+                        }
+                        
+                        # Store in Redis
+                        redis_client.hset(f"corpus:doc:{doc_id}", mapping={
+                            "text": chunk,
+                            "embedding": json.dumps(embedding),
+                            "source": url,
+                            "created_at": doc["created_at"]
+                        })
+                        
+                        redis_client.sadd("corpus:documents", doc_id)
+                        doc_id += 1
+        
+        # Store metadata
+        redis_client.hset("corpus:metadata", mapping={
+            "total_documents": doc_id,
+            "last_updated": datetime.now().isoformat(),
+            "urls": json.dumps(urls)
+        })
+        
+        logger.info(f"Corpus built with {doc_id} documents")
+        return doc_id
+    
+    # Run corpus building in background for large datasets
+    background_tasks.add_task(build_corpus)
+    
+    return PrepResponse(
+        status="building",
+        documents_processed=0,
+        message="Corpus building started. Check status with health endpoint."
+    )
+
+@app.post("/ask", response_model=QueryResponse)
+async def ask_question(request: QueryRequest):
+    """Query the RAG system"""
+    if not redis_client:
+        raise HTTPException(status_code=500, detail="Redis not available")
+    
+    # Check if corpus exists
+    doc_count = redis_client.scard("corpus:documents")
+    if doc_count == 0:
+        raise HTTPException(status_code=404, detail="No corpus found. Please run /prep-rag/ first.")
+    
+    # Get query embedding
+    query_embedding = get_embedding(request.question)
+    
+    # Retrieve relevant documents
+    doc_ids = redis_client.smembers("corpus:documents")
+    similarities = []
+    
+    for doc_id in doc_ids:
+        doc_data = redis_client.hgetall(f"corpus:doc:{doc_id}")
+        if doc_data:
+            doc_embedding = json.loads(doc_data["embedding"])
+            similarity = cosine_similarity(query_embedding, doc_embedding)
+            similarities.append((similarity, doc_data))
+    
+    # Sort by similarity and get top K
+    similarities.sort(key=lambda x: x[0], reverse=True)
+    top_docs = similarities[:TOP_K]
+    
+    if not top_docs:
+        raise HTTPException(status_code=404, detail="No relevant documents found")
+    
+    # Prepare context
+    context_parts = []
+    sources = []
+    
+    for similarity, doc in top_docs:
+        context_parts.append(f"Source: {doc['source']}\nContent: {doc['text']}")
+        sources.append(doc['source'])
+    
+    context = "\n\n".join(context_parts)
+    
+    # Generate conversation ID
+    conversation_id = request.conversation_id or f"conv_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    # Generate answer
+    try:
+        prompt = f"""Based on the following context, answer the question. If the answer is not in the context, say so.
+
+Context:
+{context}
+
+Question: {request.question}
+
+Answer:"""
+        
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            temperature=0.1
+        )
+        
+        answer = response.choices[0].message.content
+        
+        # Store conversation history
+        conversation_data = {
+            "question": request.question,
+            "answer": answer,
+            "sources": json.dumps(list(set(sources))),
+            "timestamp": datetime.now().isoformat(),
+            "user_id": request.user_id
+        }
+        
+        redis_client.hset(f"conversation:{conversation_id}", mapping=conversation_data)
+        redis_client.expire(f"conversation:{conversation_id}", 604800)  # 7 days
+        
+        return QueryResponse(
+            answer=answer,
+            sources=list(set(sources)),
+            conversation_id=conversation_id,
+            timestamp=conversation_data["timestamp"]
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating answer: {e}")
+        raise HTTPException(status_code=500, detail="Error generating answer")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
